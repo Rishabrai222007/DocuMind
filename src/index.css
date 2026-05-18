@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@400;600;800&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply antialiased text-gray-900 bg-[#FDFCFB];
+  }
+  
+  .markdown-body {
+    @apply prose prose-sm sm:prose-base max-w-none prose-orange;
+  }
+  
+  /* Custom scrollbar for better UI */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-200 rounded-full hover:bg-gray-300 transition-colors;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/80 backdrop-blur-xl border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)];
+  }
+  
+  .btn-primary {
+    @apply bg-gray-900 text-white font-bold rounded-2xl transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2;
+  }
+  
+  .btn-orange {
+    @apply bg-orange-600 text-white font-bold rounded-2xl transition-all active:scale-95 shadow-lg shadow-orange-100 hover:bg-orange-700 hover:shadow-orange-200 flex items-center justify-center gap-2;
+  }
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .markdown-body, .markdown-body * {
+    visibility: visible;
+  }
+  .markdown-body {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 20px;
+    background: white;
+  }
+}

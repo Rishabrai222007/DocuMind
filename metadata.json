@@ -1,0 +1,6 @@
+{
+  "name": "DocuMind",
+  "description": "An AI-powered document assistant that summarizes PDFs and images, providing clear, step-by-step answers to your questions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
