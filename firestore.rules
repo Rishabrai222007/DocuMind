@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global safety net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. Validation Blueprints (Anti-Update-Gap)
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email'])
+        && data.keys().size() <= 6
+        && data.uid == request.auth.uid
+        && data.email is string
+        && data.email.size() <= 200;
+    }
+
+    function isValidSavedAnalysis(data) {
+      return data.keys().hasAll(['userId', 'filenames', 'createdAt'])
+        && data.keys().size() <= 6
+        && data.userId == request.auth.uid
+        && data.filenames is list
+        && data.filenames.size() <= 10
+        && (data.filenames.size() == 0 || data.filenames[0] is string)
+        && (!('summary' in data) || (data.summary is string && data.summary.size() <= 200000))
+        && (!('tasks' in data) || (data.tasks is string && data.tasks.size() <= 200000));
+    }
+
+    // ----------------------------------------------------
+    // COLLECTION RULES
+    // ----------------------------------------------------
+
+    // Match rules for users profiles and their nested data
+    match /users/{uid} {
+      // PII isolation: Only the owner can get/write user profile information
+      allow get: if isOwner(uid) && isValidId(uid);
+      allow create, update: if isOwner(uid) && isValidId(uid) && isValidUser(incoming());
+      allow delete: if false;
+
+      // Nested Saved Analyses collection
+      match /analyses/{analysisId} {
+        allow get: if isOwner(uid) && isValidId(analysisId);
+        // Secure query enforcer: only owner can query their analyses list
+        allow list: if isOwner(uid);
+        
+        allow create: if isOwner(uid) 
+          && isValidId(analysisId) 
+          && isValidSavedAnalysis(incoming()) 
+          && incoming().createdAt == request.time;
+          
+        allow update: if isOwner(uid) 
+          && isValidId(analysisId) 
+          && isValidSavedAnalysis(incoming()) 
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['summary', 'tasks', 'filenames'])
+          );
+          
+        allow delete: if isOwner(uid) && isValidId(analysisId);
+      }
+    }
+  }
+}

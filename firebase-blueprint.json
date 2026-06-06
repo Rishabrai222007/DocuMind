@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile details with email verification state",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user ID from Firebase Auth"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Photo profile URL"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of registration"
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "SavedAnalysis": {
+      "title": "Saved Analysis",
+      "description": "AI analysis summary, extracted checklists, and chat sessions for documents",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "filenames": {
+          "type": "array",
+          "description": "Array of files included in the analysis bundle"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Markdown summary of synthesized documents"
+        },
+        "tasks": {
+          "type": "string",
+          "description": "Extracted checklist or task actions"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp of creation"
+        }
+      },
+      "required": ["userId", "filenames", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{uid}": {
+      "schema": "User",
+      "description": "Profiles for registered DocuMind users"
+    },
+    "users/{uid}/analyses/{analysisId}": {
+      "schema": "SavedAnalysis",
+      "description": "Saved summaries and structured knowledge bases for the user"
+    }
+  }
+}

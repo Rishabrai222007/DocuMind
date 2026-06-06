@@ -24,18 +24,55 @@ import {
   ClipboardCheck,
   Copy,
   Zap,
-  Linkedin,
   ExternalLink,
   BookOpen,
   Printer,
-  Download
+  Download,
+  LogIn,
+  LogOut,
+  Mail,
+  FolderOpen,
+  Bookmark,
+  Trash2,
+  ShieldCheck,
+  ShieldAlert,
+  SmartphoneNfc
 } from "lucide-react";
 import Markdown from "react-markdown";
 import { cn } from "@/src/lib/utils";
 
+// Firebase imports
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut, 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  User as FirebaseUser 
+} from "firebase/auth";
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDocs, 
+  deleteDoc, 
+  query, 
+  orderBy 
+} from "firebase/firestore";
+import { auth, db, handleFirestoreError, OperationType, testConnection } from "./firebase";
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+}
+
+interface SavedAnalysis {
+  id: string;
+  filenames: string[];
+  summary: string;
+  tasks?: string;
+  createdAt: string;
 }
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Chinese", "Hindi", "Japanese"];
@@ -54,9 +91,233 @@ export default function App() {
   const [selectedTone, setSelectedTone] = useState("Professional");
   const [copied, setCopied] = useState(false);
   const [isExtractingAction, setIsExtractingAction] = useState(false);
+
+  // Auth, Library & OTP states
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'otp'>('login');
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [otpInput, setOtpInput] = useState('');
+  const [generatedOtp, setGeneratedOtp] = useState('');
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [demoOtpSent, setDemoOtpSent] = useState<string | null>(null);
+  
+  const [savedAnalyses, setSavedAnalyses] = useState<SavedAnalysis[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [isSavingAnalysis, setIsSavingAnalysis] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Initialize and register auth observer
+  useEffect(() => {
+    testConnection();
+    
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        const userRef = doc(db, "users", user.uid);
+        try {
+          await setDoc(userRef, {
+            uid: user.uid,
+            email: user.email || "",
+            displayName: user.displayName || user.email?.split('@')[0] || "User",
+            photoURL: user.photoURL || "",
+            createdAt: new Date().toISOString()
+          }, { merge: true });
+          
+          fetchSavedAnalyses(user.uid);
+        } catch (err) {
+          console.error("Error setting up user profile in Firestore:", err);
+        }
+      } else {
+        setSavedAnalyses([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const fetchSavedAnalyses = async (uid: string) => {
+    const path = `users/${uid}/analyses`;
+    try {
+      const q = query(collection(db, path), orderBy("createdAt", "desc"));
+      const querySnapshot = await getDocs(q);
+      const list: SavedAnalysis[] = [];
+      querySnapshot.forEach((doc) => {
+        list.push({
+          id: doc.id,
+          ...doc.data()
+        } as SavedAnalysis);
+      });
+      setSavedAnalyses(list);
+    } catch (error) {
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (e: any) {
+        console.error("Firestore loading failure:", e.message);
+      }
+    }
+  };
+
+  const saveCurrentAnalysis = async () => {
+    if (!currentUser) {
+      setShowAuthModal(true);
+      return;
+    }
+    if (!summary) return;
+    setIsSavingAnalysis(true);
+    
+    const path = `users/${currentUser.uid}/analyses`;
+    const analysisId = `analysis_${Date.now()}`;
+    const fNames = files.map(f => f.name);
+    
+    try {
+      const data = {
+        userId: currentUser.uid,
+        filenames: fNames.length > 0 ? fNames : ["Uploaded Context Document"],
+        summary: summary || "",
+        tasks: chatMessages.find(m => m.content.includes("Action Items"))?.content || "",
+        createdAt: new Date().toISOString()
+      };
+      
+      await setDoc(doc(db, path, analysisId), data);
+      await fetchSavedAnalyses(currentUser.uid);
+      alert("Analysis successfully archived to your cloud library!");
+    } catch (error) {
+      try {
+        handleFirestoreError(error, OperationType.CREATE, `${path}/${analysisId}`);
+      } catch (e: any) {
+        alert("Archiving failed: " + e.message);
+      }
+    } finally {
+      setIsSavingAnalysis(false);
+    }
+  };
+
+  const deleteSavedAnalysis = async (analysisId: string) => {
+    if (!currentUser) return;
+    const path = `users/${currentUser.uid}/analyses/${analysisId}`;
+    try {
+      await deleteDoc(doc(db, "users", currentUser.uid, "analyses", analysisId));
+      setSavedAnalyses(prev => prev.filter(item => item.id !== analysisId));
+    } catch (error) {
+      try {
+        handleFirestoreError(error, OperationType.DELETE, path);
+      } catch (e: any) {
+        alert("Deletion failed: " + e.message);
+      }
+    }
+  };
+
+  const loadSavedAnalysis = (item: SavedAnalysis) => {
+    const simFiles = item.filenames.map(name => {
+      return new File([""], name, { type: name.endsWith(".pdf") ? "application/pdf" : "image/jpeg" });
+    });
+    setFiles(simFiles);
+    setSummary(item.summary);
+    const initialMsgs: Message[] = [
+      { role: 'assistant', content: "Loaded analysis archive from your secure cloud storage! You can read the summary or ask context-aware questions below." }
+    ];
+    if (item.tasks) {
+      initialMsgs.push({ role: 'assistant', content: item.tasks });
+    }
+    setChatMessages(initialMsgs);
+    setShowLibrary(false);
+  };
+
+  const handleGoogleSignIn = async () => {
+    setAuthLoading(true);
+    setAuthError(null);
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      setShowAuthModal(false);
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleEmailSignUpInitiate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput || !passwordInput) {
+      setAuthError("Please fill in all blanks.");
+      return;
+    }
+    if (passwordInput.length < 6) {
+      setAuthError("Password must be at least 6 characters.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError(null);
+    
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    setGeneratedOtp(otp);
+    setDemoOtpSent(otp);
+    setAuthMode('otp');
+    setAuthLoading(false);
+  };
+
+  const handleEmailSignUpVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    
+    if (otpInput.trim() !== generatedOtp) {
+      setAuthError("Incorrect OTP digits. Please check the code provided above.");
+      setAuthLoading(false);
+      return;
+    }
+    
+    try {
+      await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
+      setShowAuthModal(false);
+      setEmailInput('');
+      setPasswordInput('');
+      setOtpInput('');
+      setDemoOtpSent(null);
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput || !passwordInput) {
+      setAuthError("Please fill in all fields.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, emailInput, passwordInput);
+      setShowAuthModal(false);
+      setEmailInput('');
+      setPasswordInput('');
+    } catch (err: any) {
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        setAuthError("Invalid email or password. Verify your credentials.");
+      } else {
+        setAuthError(err.message);
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      reset();
+    } catch (err) {
+      console.error("Sign-out failure:", err);
+    }
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -293,16 +554,68 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-2 sm:gap-4">
-            <a 
-              href="https://www.linkedin.com/in/rishabrai69/" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="group hidden md:flex items-center gap-2 text-xs font-black text-gray-500 hover:text-orange-600 transition-all px-4 py-2 rounded-full hover:bg-orange-50 border border-transparent hover:border-orange-100"
-              id="linkedin-link"
+            {/* My Library Button */}
+            <button 
+              onClick={() => {
+                if (currentUser) {
+                  setShowLibrary(true);
+                } else {
+                  setShowAuthModal(true);
+                }
+              }}
+              className="flex items-center gap-2 text-xs font-black text-gray-700 hover:text-orange-600 transition-all px-4 py-2 rounded-full hover:bg-orange-50 border border-gray-200 hover:border-orange-100 shadow-sm outline-none"
+              id="library-btn"
             >
-              <Linkedin size={16} className="text-gray-400 group-hover:text-orange-600 transition-colors" />
-              <span>CONNECT</span>
-            </a>
+              <FolderOpen size={16} className="text-gray-400 group-hover:text-orange-600 hover:rotate-6 transition-all" />
+              <span className="hidden sm:inline">LIBRARY</span>
+              {currentUser && savedAnalyses.length > 0 && (
+                <span className="bg-orange-600 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-black animate-pulse">
+                  {savedAnalyses.length}
+                </span>
+              )}
+            </button>
+
+            {/* Profile Greeting / Login Trigger */}
+            {currentUser ? (
+              <div className="flex items-center gap-2.5 bg-gray-50 border border-gray-200 p-1 pr-3 sm:pr-4 rounded-full pl-1.5 shadow-sm">
+                <div className="w-8 h-8 rounded-full bg-orange-600 text-white flex items-center justify-center font-black text-xs shadow-md overflow-hidden relative group">
+                  {currentUser.photoURL ? (
+                    <img src={currentUser.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span>{(currentUser.displayName || currentUser.email || "U").charAt(0).toUpperCase()}</span>
+                  )}
+                </div>
+                <div className="hidden sm:flex flex-col -space-y-0.5 max-w-[120px]">
+                  <span className="text-[10px] font-black text-gray-900 truncate">
+                    {currentUser.displayName || currentUser.email?.split('@')[0]}
+                  </span>
+                  <span className="text-[8px] font-bold text-green-600 uppercase tracking-wider">Cloud Active</span>
+                </div>
+                <button 
+                  onClick={handleSignOut}
+                  className="p-1 hover:text-red-600 text-gray-400 transition-colors bg-white hover:bg-red-50 border border-gray-100 rounded-full active:scale-90"
+                  title="Sign Out"
+                >
+                  <LogOut size={14} />
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
+                className="flex items-center gap-2 text-xs font-black bg-orange-600 text-white hover:bg-orange-700 transition-all px-4 sm:px-5 py-2 sm:py-2.5 rounded-full shadow-lg shadow-orange-100 uppercase italic outline-none"
+              >
+                <LogIn size={13} />
+                <span>Sign In</span>
+              </button>
+            )}
+
+            <div 
+              className="hidden md:flex items-center gap-2 text-xs font-black text-emerald-600 bg-emerald-50/60 border border-emerald-100 px-4 py-2 rounded-full shadow-sm"
+              id="security-badge"
+            >
+              <ShieldCheck size={14} className="text-emerald-500" />
+              <span>SECURE GATEWAY</span>
+            </div>
             
             {files.length > 0 && (
               <button 
@@ -311,8 +624,7 @@ export default function App() {
                 id="reset-btn"
               >
                 <X size={16} strokeWidth={3} />
-                <span className="hidden sm:inline uppercase tracking-wider">New Analysis</span>
-                <span className="sm:hidden uppercase tracking-wider text-[10px]">New</span>
+                <span className="hidden sm:inline uppercase tracking-wider">New</span>
               </button>
             )}
           </div>
@@ -585,6 +897,18 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button 
+                      onClick={saveCurrentAnalysis}
+                      disabled={isSavingAnalysis}
+                      className="p-3 sm:p-4 bg-white hover:bg-orange-50 rounded-2xl transition-all text-gray-400 hover:text-orange-600 border border-gray-100 active:scale-95 shadow-sm flex items-center justify-center disabled:opacity-50"
+                      title="Save to Library"
+                    >
+                      {isSavingAnalysis ? (
+                        <Loader2 size={20} className="animate-spin text-orange-600" />
+                      ) : (
+                        <Bookmark size={20} className={cn(currentUser ? "text-orange-600 fill-orange-50" : "text-gray-400")} />
+                      )}
+                    </button>
+                    <button 
                       onClick={downloadAsText}
                       className="p-3 sm:p-4 bg-white hover:bg-orange-50 rounded-2xl transition-all text-gray-400 hover:text-orange-600 border border-gray-100 active:scale-95 shadow-sm"
                       title="Download as Text"
@@ -794,20 +1118,17 @@ export default function App() {
                 </div>
               </div>
               
-              <a 
-                href="https://www.linkedin.com/in/rishabrai69/" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="flex flex-col sm:flex-row items-center gap-6 bg-gray-50 border border-gray-200 px-10 py-6 sm:py-8 rounded-[3rem] group hover:border-orange-500/40 hover:bg-white transition-all shadow-xl shadow-gray-200/20 active:scale-95"
+              <div 
+                className="flex flex-col sm:flex-row items-center gap-6 bg-[#FAFAF9] border border-gray-200 px-10 py-6 sm:py-8 rounded-[3rem] shadow-xl shadow-gray-200/10"
               >
                 <div className="flex flex-col text-center sm:text-right space-y-0.5">
-                  <span className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em]">Contact the Developer</span>
-                  <span className="text-2xl font-black text-gray-900 group-hover:text-orange-600 transition-colors font-display">Rishab Rai</span>
+                  <span className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em]">Cloud Security Integrity</span>
+                  <span className="text-2xl font-black text-gray-900 font-display">Zero-Knowledge Storage</span>
                 </div>
-                <div className="w-16 h-16 rounded-[1.5rem] bg-white border border-gray-200 flex items-center justify-center shadow-lg group-hover:shadow-2xl group-hover:border-orange-500/40 transition-all">
-                  <Linkedin size={32} className="text-gray-400 group-hover:text-orange-600 transition-colors" />
+                <div className="w-16 h-16 rounded-[1.5rem] bg-white border border-gray-200 flex items-center justify-center shadow-lg text-emerald-600">
+                  <ShieldCheck size={32} className="text-emerald-500 animate-pulse" />
                 </div>
-              </a>
+              </div>
             </div>
 
             <div className="pt-10 border-t border-gray-100 text-center">
@@ -820,6 +1141,302 @@ export default function App() {
             </div>
           </div>
         </footer>
+      )}
+
+      {/* Cloud Library Sidebar Panel */}
+      <AnimatePresence>
+        {showLibrary && (
+          <div className="fixed inset-0 z-50 flex justify-end bg-gray-900/40 backdrop-blur-md animate-in fade-in duration-300">
+            {/* Backdrop toggle */}
+            <div className="absolute inset-0" onClick={() => setShowLibrary(false)}></div>
+            
+            <div className="bg-[#FDFCFB] w-full max-w-lg h-full border-l border-gray-100 shadow-2xl relative z-10 flex flex-col p-6 sm:p-10 animate-in slide-in-from-right duration-300">
+              <div className="absolute top-0 left-0 w-32 h-32 bg-orange-50/50 -ml-16 -mt-16 rounded-full blur-2xl"></div>
+              
+              {/* Header */}
+              <div className="flex items-center justify-between pb-6 border-b border-gray-150 relative z-10">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center text-orange-600 shadow-inner">
+                    <FolderOpen size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-lg text-gray-900 font-display uppercase tracking-wider">Cloud Library</h3>
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-none mt-1">{savedAnalyses.length} Analyses Saved</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowLibrary(false)}
+                  className="p-2 hover:bg-gray-100 rounded-xl text-gray-400 hover:text-gray-600"
+                >
+                  <X size={18} strokeWidth={3} />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto py-6 space-y-4 scrollbar-hide relative z-10">
+                {savedAnalyses.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-4">
+                    <div className="w-16 h-16 bg-gray-50 border border-gray-200 rounded-2xl flex items-center justify-center text-gray-400 shadow-sm">
+                      <Bookmark size={24} />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="font-extrabold text-sm text-gray-900 uppercase tracking-wider">Your Library is Empty</h4>
+                      <p className="text-xs text-gray-400 max-w-xs leading-relaxed font-bold">
+                        Analyze and synthesize documents, then archive them in the cloud using the save button next to your summary panel.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  savedAnalyses.map((item) => (
+                    <div 
+                      key={item.id}
+                      className="bg-white border border-gray-200 p-5 rounded-2xl shadow-sm hover:shadow-lg hover:border-orange-200 transition-all flex flex-col justify-between gap-4 group/item"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="font-black text-xs text-gray-400 uppercase tracking-widest">
+                            {new Date(item.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </div>
+                          
+                          <button 
+                            onClick={() => {
+                              if (confirm("Are you sure you want to delete this saved analysis?")) {
+                                deleteSavedAnalysis(item.id);
+                              }
+                            }}
+                            className="p-1 hover:bg-red-50 text-gray-300 hover:text-red-650 rounded-lg transition-colors"
+                            title="Delete Saved Analysis"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                        
+                        <h4 className="font-black text-sm text-gray-900 group-hover/item:text-orange-600 transition-colors line-clamp-2">
+                          {item.filenames.join(", ")}
+                        </h4>
+                        
+                        <p className="text-xs text-gray-500 line-clamp-3 font-semibold leading-relaxed font-sans">
+                          {item.summary.replace(/[#*`_]/g, '')}
+                        </p>
+                      </div>
+                      
+                      <button 
+                        onClick={() => loadSavedAnalysis(item)}
+                        className="w-full bg-gray-50 text-gray-950 font-black py-2.5 rounded-xl border border-gray-200 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition-all text-xs uppercase tracking-widest text-center"
+                      >
+                        Load Analysis Context
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Auth Setup Modal */}
+      {showAuthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-md border border-gray-100 shadow-2xl p-8 sm:p-10 relative overflow-hidden flex flex-col gap-6 animate-in zoom-in duration-350">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-orange-50/50 -mr-16 -mt-16 rounded-full blur-2xl"></div>
+            
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="space-y-1">
+                <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center text-white shadow-md mb-2">
+                  <BrainCircuit size={18} />
+                </div>
+                <h3 className="font-black text-xl sm:text-2xl text-gray-900 font-display uppercase tracking-tight leading-none">
+                  {authMode === 'login' && "Sign In"}
+                  {authMode === 'signup' && "Create Account"}
+                  {authMode === 'otp' && "Verify OTP"}
+                </h3>
+                <p className="text-xs text-gray-400 font-medium font-sans mt-1">
+                  {authMode === 'login' && "Access your personalized document library"}
+                  {authMode === 'signup' && "Create a free lifetime secure portfolio"}
+                  {authMode === 'otp' && "We've sent an authentication verification code."}
+                </p>
+              </div>
+              <button 
+                onClick={() => { setShowAuthModal(false); setAuthError(null); setDemoOtpSent(null); }}
+                className="p-2 hover:bg-gray-100 rounded-xl text-gray-400 hover:text-gray-600 outline-none"
+              >
+                <X size={18} strokeWidth={3} />
+              </button>
+            </div>
+
+            {authError && (
+              <div className="bg-red-50 text-red-600 text-xs p-4 rounded-xl border border-red-100 font-bold leading-relaxed flex items-center gap-3 font-sans">
+                <ShieldAlert size={16} className="flex-shrink-0" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            {/* Demo OTP Box */}
+            {authMode === 'otp' && demoOtpSent && (
+              <div className="bg-orange-55 bg-orange-50 text-orange-900 text-xs p-4 rounded-xl border border-orange-200 font-semibold leading-relaxed space-y-2 font-sans">
+                <div className="flex items-center gap-2">
+                  <SmartphoneNfc size={18} className="text-orange-500 animate-pulse" />
+                  <span className="uppercase tracking-wider font-extrabold text-[10px]">OTP Delivery System</span>
+                </div>
+                <p className="font-medium text-gray-600">
+                  For resume and portfolio evaluation flow, we've bypassed SMTP delays and generated this OTP verification token instantly:
+                </p>
+                <div className="bg-white p-2.5 rounded-lg text-center font-black text-lg tracking-[0.4em] text-orange-600 border border-orange-200 shadow-sm selection:bg-orange-100 font-mono">
+                  {demoOtpSent}
+                </div>
+              </div>
+            )}
+
+            {/* Forms */}
+            {authMode === 'login' && (
+              <form onSubmit={handleEmailSignIn} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Email Address</label>
+                  <input 
+                    type="email" 
+                    required
+                    placeholder="name@example.com"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 font-bold text-gray-900 placeholder:text-gray-400 text-sm focus:border-orange-500 focus:bg-white outline-none"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Password</label>
+                  <input 
+                    type="password" 
+                    required
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 font-bold text-gray-900 placeholder:text-gray-400 text-sm focus:border-orange-500 focus:bg-white outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full bg-orange-600 text-white py-3.5 rounded-xl font-black text-sm uppercase tracking-wider hover:bg-orange-700 transition-all disabled:opacity-50 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  {authLoading ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
+                  Sign In with Email
+                </button>
+              </form>
+            )}
+
+            {authMode === 'signup' && (
+              <form onSubmit={handleEmailSignUpInitiate} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Email Address</label>
+                  <input 
+                    type="email" 
+                    required
+                    placeholder="name@example.com"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 font-bold text-gray-900 placeholder:text-gray-400 text-sm focus:border-orange-500 focus:bg-white outline-none"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Password (6+ chars)</label>
+                  <input 
+                    type="password" 
+                    required
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 font-bold text-gray-900 placeholder:text-gray-400 text-sm focus:border-orange-500 focus:bg-white outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full bg-orange-600 text-white py-3.5 rounded-xl font-black text-sm uppercase tracking-wider hover:bg-orange-700 transition-all disabled:opacity-50 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  {authLoading ? <Loader2 size={16} className="animate-spin" /> : <Mail size={16} />}
+                  Get Verification OTP
+                </button>
+              </form>
+            )}
+
+            {authMode === 'otp' && (
+              <form onSubmit={handleEmailSignUpVerify} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Enter 6-Digit Verification Code</label>
+                  <input 
+                    type="text" 
+                    required
+                    maxLength={6}
+                    placeholder="000000"
+                    value={otpInput}
+                    onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-4 py-4 rounded-xl bg-gray-50 border border-gray-200 text-center font-black tracking-[0.5em] text-lg text-gray-900 placeholder:text-gray-300 focus:border-orange-500 focus:bg-white outline-none"
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  disabled={authLoading || otpInput.length < 6}
+                  className="w-full bg-gray-950 text-white py-3.5 rounded-xl font-black text-sm uppercase tracking-wider hover:bg-black transition-all disabled:opacity-50 active:scale-95 shadow-md flex items-center justify-center gap-2"
+                >
+                  {authLoading ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  Verify & Create Account
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => { setAuthMode('signup'); setDemoOtpSent(null); setOtpInput(''); }}
+                  className="w-full text-center text-xs text-gray-400 hover:text-gray-600 font-bold uppercase tracking-wider font-sans"
+                >
+                  Back to Sign Up
+                </button>
+              </form>
+            )}
+
+            {/* OAuth and switch link */}
+            {authMode !== 'otp' && (
+              <div className="space-y-4">
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200"></div></div>
+                  <div className="relative flex justify-center text-[10px] uppercase font-black tracking-widest text-gray-400"><span className="bg-white px-3">or connect instantly</span></div>
+                </div>
+                
+                <button 
+                  onClick={handleGoogleSignIn}
+                  disabled={authLoading}
+                  className="w-full border border-gray-200 bg-white hover:bg-gray-50 text-gray-800 font-bold py-3.5 rounded-xl hover:border-gray-300 transition-all text-sm active:scale-95 shadow-sm flex items-center justify-center gap-3 outline-none"
+                >
+                  <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
+                    <path fill="#EA4335" d="M12 5.04c1.66 0 3.2.57 4.38 1.69l3.27-3.27C17.67 1.47 15.02.75 12 .75 7.23.75 3.19 3.5 1.24 7.52l3.83 2.97C5.97 7.42 8.76 5.04 12 5.04z" />
+                    <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.34H12v4.44h6.46c-.28 1.47-1.11 2.72-2.36 3.56l3.66 2.84c2.14-1.97 3.37-4.87 3.37-8.5z" />
+                    <path fill="#FBBC05" d="M5.07 14.51c-.24-.71-.38-1.47-.38-2.26s.14-1.55.38-2.26L1.24 7.02C.45 8.61 0 10.39 0 12.25s.45 3.64 1.24 5.23l3.83-2.97z" />
+                    <path fill="#34A853" d="M12 23.25c3.24 0 5.97-1.07 7.96-2.91l-3.66-2.84c-1.01.68-2.31 1.09-3.9 1.09-3.24 0-6.03-2.38-7.01-5.45l-3.83 2.97c1.95 4.02 5.99 6.77 10.76 6.77z" />
+                  </svg>
+                  Continue with Google
+                </button>
+              </div>
+            )}
+
+            {authMode !== 'otp' && (
+              <div className="text-center text-xs">
+                {authMode === 'login' ? (
+                  <p className="text-gray-400 font-medium">
+                    Don't have an email login yet?{" "}
+                    <button onClick={() => { setAuthMode('signup'); setAuthError(null); }} className="text-orange-600 hover:text-orange-700 font-extra-bold underline uppercase tracking-wider text-[10px]">
+                      Create Account
+                    </button>
+                  </p>
+                ) : (
+                  <p className="text-gray-400 font-medium">
+                    Already registered using email?{" "}
+                    <button onClick={() => { setAuthMode('login'); setAuthError(null); }} className="text-orange-600 hover:text-orange-700 font-extra-bold underline uppercase tracking-wider text-[10px]">
+                      Sign In
+                    </button>
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

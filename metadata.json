@@ -1,6 +1,6 @@
 {
   "name": "DocuMind",
-  "description": "An AI-powered document assistant that summarizes PDFs and images, providing clear, step-by-step answers to your questions.",
+  "description": "DocuMind is an AI-powered document intelligence platform that unifies and analyzes up to 10 PDFs or images simultaneously. Users can synthesize multi-document knowledge bases into structured digital books, extract actionable checklists with automated task mapping, and perform context-aware Q&A using resilient Gemini API models. Designed for resumes and professional portfolios.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
