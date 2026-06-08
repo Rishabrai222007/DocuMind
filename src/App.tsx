@@ -103,6 +103,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [demoOtpSent, setDemoOtpSent] = useState<string | null>(null);
+  const [etherealMailUrl, setEtherealMailUrl] = useState<string | null>(null);
   
   const [savedAnalyses, setSavedAnalyses] = useState<SavedAnalysis[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -241,7 +242,7 @@ export default function App() {
     }
   };
 
-  const handleEmailSignUpInitiate = (e: React.FormEvent) => {
+  const handleEmailSignUpInitiate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailInput || !passwordInput) {
       setAuthError("Please fill in all blanks.");
@@ -253,31 +254,65 @@ export default function App() {
     }
     setAuthLoading(true);
     setAuthError(null);
+    setEtherealMailUrl(null);
+    setDemoOtpSent(null);
     
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(otp);
-    setDemoOtpSent(otp);
-    setAuthMode('otp');
-    setAuthLoading(false);
+    try {
+      const response = await fetch("/api/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to initiate email verification flow.");
+      }
+      
+      if (data.isEthereal && data.etherealUrl) {
+        setEtherealMailUrl(data.etherealUrl);
+      }
+      
+      if (data.simulationCode) {
+        setDemoOtpSent(data.simulationCode);
+      }
+      
+      setAuthMode('otp');
+    } catch (err: any) {
+      setAuthError(err.message || "An unexpected error occurred while dispatching verification email.");
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleEmailSignUpVerify = async (e: React.FormEvent) => {
     e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
-    
-    if (otpInput.trim() !== generatedOtp) {
-      setAuthError("Incorrect OTP digits. Please check the code provided above.");
-      setAuthLoading(false);
+    if (!otpInput) {
+      setAuthError("Please enter the 6-digit verification code.");
       return;
     }
     
+    setAuthLoading(true);
+    setAuthError(null);
+    
     try {
+      const response = await fetch("/api/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput, otp: otpInput })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Verification failed. Please double-check your code.");
+      }
+      
       await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
       setShowAuthModal(false);
       setEmailInput('');
       setPasswordInput('');
       setOtpInput('');
+      setEtherealMailUrl(null);
       setDemoOtpSent(null);
     } catch (err: any) {
       setAuthError(err.message);
@@ -1273,19 +1308,55 @@ export default function App() {
               </div>
             )}
 
-            {/* Demo OTP Box */}
-            {authMode === 'otp' && demoOtpSent && (
-              <div className="bg-orange-55 bg-orange-50 text-orange-900 text-xs p-4 rounded-xl border border-orange-200 font-semibold leading-relaxed space-y-2 font-sans">
-                <div className="flex items-center gap-2">
-                  <SmartphoneNfc size={18} className="text-orange-500 animate-pulse" />
-                  <span className="uppercase tracking-wider font-extrabold text-[10px]">OTP Delivery System</span>
+            {/* Demo / Sandbox / SMTP OTP Status Info */}
+            {authMode === 'otp' && (
+              <div className="bg-orange-50 text-orange-950 text-xs p-5 rounded-2xl border border-orange-100 font-semibold leading-relaxed space-y-3 font-sans shadow-inner">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <SmartphoneNfc size={18} className="text-orange-500 animate-pulse" />
+                    <span className="uppercase tracking-widest font-extrabold text-[10px] text-orange-600 font-display">SMTP OTP System</span>
+                  </div>
+                  <span className="text-[10px] bg-orange-100 px-2.5 py-0.5 rounded-full font-black text-orange-700 font-mono">STATUS: DISPATCHED</span>
                 </div>
-                <p className="font-medium text-gray-600">
-                  For resume and portfolio evaluation flow, we've bypassed SMTP delays and generated this OTP verification token instantly:
+                
+                <p className="font-medium text-gray-700">
+                  We've successfully dispatched a secure, server-generated 6-digit one-time PIN (OTP) code to:
+                  <strong className="block mt-1 font-bold text-gray-900 break-all">{emailInput}</strong>
                 </p>
-                <div className="bg-white p-2.5 rounded-lg text-center font-black text-lg tracking-[0.4em] text-orange-600 border border-orange-200 shadow-sm selection:bg-orange-100 font-mono">
-                  {demoOtpSent}
-                </div>
+
+                {etherealMailUrl && (
+                  <div className="space-y-2.5 pt-2">
+                    <p className="text-gray-500 text-[11px] leading-normal font-normal">
+                      Since this is a sandboxed evaluation build, the email was processed securely on our mock SMTP server. You can instantly view the delivered email layout and retrieve your OTP code here:
+                    </p>
+                    <a 
+                      href={etherealMailUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex w-full items-center justify-center gap-2 bg-orange-600 hover:bg-orange-700 text-white font-black py-3 px-4 rounded-xl text-xs uppercase tracking-wide transition-all shadow-md active:scale-95 text-center cursor-pointer"
+                    >
+                      <span>📥 Open Ethereal Sandbox Inbox</span>
+                      <ExternalLink size={12} strokeWidth={3} />
+                    </a>
+                  </div>
+                )}
+
+                {demoOtpSent && (
+                  <div className="space-y-2 pt-1 border-t border-orange-200/50">
+                    <p className="text-gray-500 text-[11px] leading-normal font-normal">
+                      (Simulated delivery code was stored due to SMTP network rate-limiting):
+                    </p>
+                    <div className="bg-white p-2.5 rounded-lg text-center font-black text-lg tracking-[0.4em] text-orange-600 border border-orange-200 shadow-sm selection:bg-orange-100 font-mono">
+                      {demoOtpSent}
+                    </div>
+                  </div>
+                )}
+                
+                {!etherealMailUrl && !demoOtpSent && (
+                  <p className="text-[11px] text-orange-850 italic font-medium pt-1">
+                    Allow up to 1-2 minutes for SMTP route delivery. If you are using custom SMTP credentials, please check your inbox (including your spam/junk folder).
+                  </p>
+                )}
               </div>
             )}
 

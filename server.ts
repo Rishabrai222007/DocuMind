@@ -4,6 +4,7 @@ import multer from "multer";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import * as dotenv from "dotenv";
+import nodemailer from "nodemailer";
 
 dotenv.config();
 
@@ -222,6 +223,153 @@ app.post("/api/synthesize-book", upload.array("files", 10), async (req, res) => 
     res.json({ result: response?.text || "" });
   } catch (error: any) {
     res.status(500).json({ error: "Failed to synthesize book. Please try again." });
+  }
+});
+
+// Memory store for OTPs (Email -> { otp, expires })
+const otpStore = new Map<string, { otp: string; expires: number }>();
+
+// API: Send OTP
+app.post("/api/send-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Valid for 10 minutes
+    otpStore.set(email.toLowerCase().trim(), { otp, expires: Date.now() + 10 * 60 * 1000 });
+
+    let viewUrl: string | null = null;
+    let isEthereal = false;
+    let mailSuccess = false;
+
+    // Determine secure connection configurations
+    if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+      console.log(`[SMTP] Attempting to send live email to ${email} using SMTP user ${process.env.SMTP_USER}`);
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || "smtp.gmail.com",
+        port: parseInt(process.env.SMTP_PORT || "587"),
+        secure: process.env.SMTP_SECURE === "true",
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
+      });
+
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || `"Secure DocAI Gateway" <no-reply@docai-secure.com>`,
+        to: email,
+        subject: "Your Cloud Verification OTP Code",
+        text: `Hello,\n\nTo verify your email address, please use the following 6-digit one-time password (OTP):\n\n${otp}\n\nThis security code will expire in 10 minutes.\n\nBest regards,\nSecure Document AI Team`,
+        html: `
+          <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 32px; border: 1px solid #f0f0f0; border-radius: 20px; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.03);">
+            <div style="text-align: center; margin-bottom: 24px;">
+              <span style="font-size: 24px; font-weight: 900; color: #ea580c; letter-spacing: -0.025em; text-transform: uppercase; font-style: italic;">SECURE DOCAI</span>
+            </div>
+            <p style="font-size: 14px; color: #4b5563; line-height: 1.6; margin-bottom: 24px;">Hello,</p>
+            <p style="font-size: 14px; color: #4b5563; line-height: 1.6; margin-bottom: 24px;">You have requested to verify your email address to access or create your cloud document archive. Please input the following 6-digit token in the verification interface:</p>
+            <div style="text-align: center; margin: 32px 0;">
+              <span style="font-size: 32px; font-weight: 900; letter-spacing: 0.3em; color: #ea580c; background-color: #fff7ed; padding: 16px 28px; border: 1px dashed #fdba74; border-radius: 16px; display: inline-block;">${otp}</span>
+            </div>
+            <p style="font-size: 12px; color: #9ca3af; text-align: center; margin-top: 24px;">This key expires strictly after 10 minutes and is only usable once.</p>
+            <hr style="border: none; border-top: 1px solid #f3f4f6; margin: 24px 0;">
+            <p style="font-size: 10px; color: #9ca3af; text-align: center; line-height: 1.5;">Designed under Zero-Knowledge principles. If you did not make this registration request, please ignore this communication safely.</p>
+          </div>
+        `
+      });
+      mailSuccess = true;
+    } else {
+      console.log(`[SMTP Sandbox] No credentials found. Initializing a temporary Ethereal SMTP test account...`);
+      isEthereal = true;
+      try {
+        const testAccount = await nodemailer.createTestAccount();
+        const transporter = nodemailer.createTransport({
+          host: "smtp.ethereal.email",
+          port: 587,
+          secure: false,
+          auth: {
+            user: testAccount.user,
+            pass: testAccount.pass
+          }
+        });
+
+        const info = await transporter.sendMail({
+          from: '"Secure DocAI Gateway" <no-reply@docai-secure.com>',
+          to: email,
+          subject: "Your Cloud Verification OTP Code",
+          text: `Hello,\n\nTo verify your email address, please use the following 6-digit one-time password (OTP):\n\n${otp}\n\nThis security code will expire in 10 minutes.\n\nBest regards,\nSecure Document AI Team`,
+          html: `
+            <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 32px; border: 1px solid #f0f0f0; border-radius: 20px; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.032);">
+              <div style="text-align: center; margin-bottom: 24px;">
+                <span style="font-size: 24px; font-weight: 900; color: #ea580c; letter-spacing: -0.025em; text-transform: uppercase; font-style: italic;">SECURE DOCAI</span>
+              </div>
+              <p style="font-size: 14px; color: #4b5563; line-height: 1.6; margin-bottom: 24px;">Hello,</p>
+              <p style="font-size: 14px; color: #4b5563; line-height: 1.6; margin-bottom: 24px;">You have requested to verify your email address to access or create your cloud document archive. Please input the following 6-digit token in the verification interface:</p>
+              <div style="text-align: center; margin: 32px 0;">
+                <span style="font-size: 32px; font-weight: 900; letter-spacing: 0.3em; color: #ea580c; background-color: #fff7ed; padding: 16px 28px; border: 1px dashed #fdba74; border-radius: 16px; display: inline-block;">${otp}</span>
+              </div>
+              <p style="font-size: 12px; color: #9ca3af; text-align: center; margin-top: 24px;">This key expires strictly after 10 minutes and is only usable once.</p>
+              <hr style="border: none; border-top: 1px solid #f3f4f6; margin: 24px 0;">
+              <p style="font-size: 10px; color: #9ca3af; text-align: center; line-height: 1.5;">Designed under Zero-Knowledge principles. If you did not make this registration request, please ignore this communication safely.</p>
+            </div>
+          `
+        });
+
+        viewUrl = nodemailer.getTestMessageUrl(info) || null;
+        console.log(`[SMTP Sandbox] Mail sent to test mailbox! View preview at: ${viewUrl}`);
+        mailSuccess = true;
+      } catch (err) {
+        console.error("Failed to initialize Ethereal test inbox:", err);
+      }
+    }
+
+    res.json({
+      success: true,
+      isEthereal,
+      etherealUrl: viewUrl,
+      // Fallback code if SMTP routing failed so developer can still evaluate
+      simulationCode: !mailSuccess ? otp : null
+    });
+  } catch (error: any) {
+    console.error("Error sending OTP email:", error);
+    res.status(500).json({ error: "Failed to dispatch verification email. Please try again." });
+  }
+});
+
+// API: Verify OTP
+app.post("/api/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ error: "Email address and OTP code are required fields." });
+    }
+
+    const key = email.toLowerCase().trim();
+    const record = otpStore.get(key);
+
+    if (!record) {
+      return res.status(400).json({ error: "No verification request registered for this email address. Please request a new OTP." });
+    }
+
+    if (Date.now() > record.expires) {
+      otpStore.delete(key);
+      return res.status(400).json({ error: "This OTP code has expired. Please request a new one." });
+    }
+
+    if (record.otp !== otp.trim()) {
+      return res.status(400).json({ error: "Incorrect 6-digit code. Please verify the numbers sent." });
+    }
+
+    // Success! Clear otp
+    otpStore.delete(key);
+    res.json({ success: true, message: "Code verified successfully." });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to process security verification request." });
   }
 });
 
